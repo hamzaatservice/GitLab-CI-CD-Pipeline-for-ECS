@@ -1,0 +1,53 @@
+image: docker:20.10.16
+
+variables:
+  AWS_REGION: region
+  ECR_REPOSITORY_NAME: repository name
+  ECS_TASK_DEFINITION_NAME: taskdefinition
+  ECS_SERVICE_NAME: service name
+  ECS_CLUSTER_NAME: cluster name
+  AWS_ACCOUNT_ID: your aws account id
+  CONTAINER_IMAGE_TAG: "${CI_COMMIT_SHORT_SHA}"
+
+services:
+  - docker:dind
+
+stages:
+  - build
+  - deploy
+
+before_script:
+  - apk add --no-cache curl jq python3 py3-pip unzip
+  - python3 -m venv /root/venv
+  - source /root/venv/bin/activate
+  - pip3 install --no-cache-dir awscli
+  - rm -rf ~/.aws/credentials
+  - aws configure set aws_access_key_id "${AWS_ACCESS_KEY_ID}"
+  - aws configure set aws_secret_access_key "${AWS_SECRET_ACCESS_KEY}"
+  - aws configure set region "${AWS_REGION}"
+  - aws ecr get-login-password --region "${AWS_REGION}" | docker login --username AWS --password-stdin ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com
+
+build:
+  stage: build
+  script:
+    - echo "Building Docker image..."
+    - docker build -t ${ECR_REPOSITORY_NAME}:${CONTAINER_IMAGE_TAG} .
+    - docker tag ${ECR_REPOSITORY_NAME}:${CONTAINER_IMAGE_TAG} ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPOSITORY_NAME}:${CONTAINER_IMAGE_TAG}
+    - echo "Pushing Docker image to ECR..."
+    - docker push ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPOSITORY_NAME}:${CONTAINER_IMAGE_TAG}
+  only:
+    - staging
+
+deploy:
+  stage: deploy
+  script:
+    - echo "Updating ECS Task Definition and Service..."
+    - export CURRENT_TASK_DEFINITION=$(aws ecs describe-task-definition --task-definition ${ECS_TASK_DEFINITION_NAME} | jq '.taskDefinition')
+    - export STRIPPED_TASK_DEFINITION=$(echo $CURRENT_TASK_DEFINITION | jq 'del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .compatibilities, .registeredAt, .registeredBy)')
+    - export NEW_TASK_DEFINITION=$(echo $STRIPPED_TASK_DEFINITION | jq --arg IMAGE "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPOSITORY_NAME}:${CONTAINER_IMAGE_TAG}" '.containerDefinitions[0].image = $IMAGE')
+    - echo $NEW_TASK_DEFINITION | jq -c . > new-task-definition.json
+    - export NEW_TASK_DEFINITION_ARN=$(aws ecs register-task-definition --cli-input-json file://new-task-definition.json | jq -r '.taskDefinition.taskDefinitionArn')
+    - aws ecs update-service --cluster ${ECS_CLUSTER_NAME} --service ${ECS_SERVICE_NAME} --task-definition $NEW_TASK_DEFINITION_ARN
+  only:
+    - staging
+

@@ -1,0 +1,18 @@
+baik_frontend:
+    stage: deploy
+    tags:
+      - baik-frontend
+    before_script:
+        - 'which ssh-agent || ( apt-get update -y && apt-get install openssh-client -y )'
+        - mkdir -p ~/.ssh
+        - eval $(ssh-agent -s)
+        - '[[ -f /.dockerenv ]] && echo -e "Host *\n\tStrictHostKeyChecking no\n\n" > ~/.ssh/config'
+    script:
+        - echo "Deploy to Baik FrontEnd"
+        - ssh-add <(echo "$SSH_KEY")
+        - rm -rf .git
+        - ssh -o StrictHostKeyChecking=no frontend@10.10.11.88 "cd /home/frontend/frontend; rm -rf node_modules; git reset --hard; git pull origin staging-2.0; npm i; npm run build;  pm2 restart 0; exit"
+    only:
+        - staging-2.0
+
+
